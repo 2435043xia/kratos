@@ -1,12 +1,16 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/go-kratos/kratos/cmd/kratos/v2/internal/base"
+	"io/fs"
+	"io/ioutil"
 	"os"
 	"path"
-
-	"github.com/go-kratos/kratos/cmd/kratos/v2/internal/base"
+	"path/filepath"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
@@ -21,7 +25,8 @@ type Project struct {
 // New new a project from remote repo.
 func (p *Project) New(ctx context.Context, dir string, layout string, branch string) error {
 	to := path.Join(dir, p.Name)
-	if _, err := os.Stat(to); !os.IsNotExist(err) {
+	internalto := path.Join(dir, "internal", "app", p.Name)
+	if _, err := os.Stat(internalto); !os.IsNotExist(err) {
 		fmt.Printf("🚫 %s already exists\n", p.Name)
 		override := false
 		prompt := &survey.Confirm{
@@ -35,20 +40,35 @@ func (p *Project) New(ctx context.Context, dir string, layout string, branch str
 		if !override {
 			return err
 		}
-		os.RemoveAll(to)
+		os.RemoveAll(internalto)
 	}
 	fmt.Printf("🚀 Creating service %s, layout repo is %s, please wait a moment.\n\n", p.Name, layout)
 	repo := base.NewRepo(layout, branch)
-	if err := repo.CopyTo(ctx, to, p.Path, []string{".git", ".github"}); err != nil {
+	if err := repo.CopyTo(ctx, internalto, p.Path, []string{".git", ".github", ".idea", "go.mod"}); err != nil {
 		return err
 	}
-	e := os.Rename(
-		path.Join(to, "cmd", "server"),
-		path.Join(to, "cmd", p.Name),
-	)
-	if e != nil {
-		return e
+
+	err := os.MkdirAll(path.Join(dir, "api", p.Name, "v1"), 0755)
+	if err != nil {
+		return err
 	}
+
+	name := []byte(p.Name)
+	name[0] -= 'a' - 'A'
+	filepath.Walk(internalto, func(fp string, info fs.FileInfo, err error) error {
+		if !info.IsDir() {
+			fd, _ := ioutil.ReadFile(fp)
+			ioutil.WriteFile(fp,
+				bytes.ReplaceAll(
+					bytes.ReplaceAll(fd, []byte("%NAME%"), name),
+					[]byte("%name%"), []byte(p.Name)), 0777)
+		}
+		if strings.Contains(fp, "%NAME%") {
+			os.Rename(fp, strings.ReplaceAll(fp, "%NAME%", p.Name))
+		}
+		return nil
+	})
+
 	base.Tree(to, dir)
 
 	fmt.Printf("\n🍺 Project creation succeeded %s\n", color.GreenString(p.Name))
